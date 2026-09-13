@@ -1,33 +1,76 @@
 name: Claude 5h ping
 
-# Keeps a Claude Pro/Max 5-hour usage window running at all times.
-# Cron times are UTC. See README.md for how to change the schedule.
+# Sends one tiny message to Claude right after the 5-hour usage window resets,
+# so the next window starts immediately. Cron times are UTC.
 on:
   schedule:
-    - cron: '13,43 * * * *' # ping: every 30 minutes
-    - cron: '27 4 * * 1'    # keepalive: weekly, stops GitHub auto-disabling the schedule
+    - cron: '3-59/10 * * * *' # check: every 10 minutes, pings only when a reset is due
+    - cron: '27 4 * * 1'      # keepalive: weekly, stops GitHub auto-disabling the schedule
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Ping now, even if no reset is due'
+        type: boolean
+        default: false
 
 permissions: {}
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.schedule || 'manual' }}
-  cancel-in-progress: false
-
 jobs:
   ping:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '13,43 * * * *'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '3-59/10 * * * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 45
+    concurrency:
+      group: claude-5h-ping
+      cancel-in-progress: false
+    env:
+      LEAD_SECONDS: 1500   # start waiting when the reset is less than 25 min away
+      MARGIN_SECONDS: 60   # ping this long after the reset, never before it
+      TZ_DISPLAY: America/Los_Angeles
     steps:
+      - name: Load last known reset time
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: next-reset-${{ github.run_id }}
+          restore-keys: next-reset-
+
+      - name: Check if a reset is due
+        id: check
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          now=$(date +%s)
+          reset=$(cat state/next-reset 2>/dev/null || echo 0)
+          wait=$((reset + MARGIN_SECONDS - now))
+          if [ "$FORCE" = "true" ] || [ "$reset" -eq 0 ]; then
+            echo "Pinging now."
+            echo "due=true" >> "$GITHUB_OUTPUT"
+            echo "wait=0" >> "$GITHUB_OUTPUT"
+          elif [ "$wait" -le "$LEAD_SECONDS" ]; then
+            echo "Reset at $(TZ=$TZ_DISPLAY date -d @"$reset" '+%-I:%M %p %Z'), pinging right after it."
+            echo "due=true" >> "$GITHUB_OUTPUT"
+            echo "wait=$(( wait > 0 ? wait : 0 ))" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not due. Next reset at $(TZ=$TZ_DISPLAY date -d @"$reset" '+%a %-I:%M %p %Z')."
+            echo "due=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.check.outputs.due == 'true'
         with:
           node-version: 22
 
       - name: Install Claude Code
+        if: steps.check.outputs.due == 'true'
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Send ping
+      - name: Wait for the reset
+        if: steps.check.outputs.due == 'true' && steps.check.outputs.wait != '0'
+        run: sleep ${{ steps.check.outputs.wait }}
+
+      - name: Send ping and read the next reset time
+        if: steps.check.outputs.due == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
@@ -35,18 +78,58 @@ jobs:
             echo "::error::Secret CLAUDE_CODE_OAUTH_TOKEN is not set. Run 'claude setup-token' and add it under Settings > Secrets and variables > Actions."
             exit 1
           fi
-          # No --bare: bare mode ignores CLAUDE_CODE_OAUTH_TOKEN.
-          # --tools "" must be followed by another option, not the prompt.
-          reply=$(claude --model haiku \
-            --tools "" \
-            --system-prompt "Reply with the single word: ok" \
-            --no-session-persistence \
-            -p "ping")
-          echo "Claude replied: $reply"
-          if [ -z "$reply" ]; then
-            echo "::error::Empty reply from Claude. The token may be expired or invalid."
-            exit 1
-          fi
+          mkdir -p state
+          for attempt in 1 2 3; do
+            # No --bare: bare mode ignores CLAUDE_CODE_OAUTH_TOKEN.
+            # --tools "" must be followed by another option, not the prompt.
+            out=$(claude --model haiku \
+              --tools "" \
+              --system-prompt "Reply with the single word: ok" \
+              --no-session-persistence \
+              --output-format stream-json --verbose \
+              -p "ping" || true)
+            now=$(date +%s)
+            json=$(jq -cR 'fromjson?' <<<"$out")
+            reply=$(jq -r 'select(.type=="result") | .result // empty' <<<"$json")
+            is_error=$(jq -r 'select(.type=="result") | .is_error' <<<"$json")
+            limits=$(jq -c 'select(.type=="rate_limit_event") | .rate_limit_info' <<<"$json")
+            echo "Claude replied: ${reply:-<nothing>}"
+            jq -c '{status, rateLimitType, resetsAt}' <<<"$limits"
+
+            # Prefer a limit that is currently blocking, otherwise the 5-hour window.
+            reset=$(jq -rs 'map(select(.resetsAt != null))
+              | (map(select(.status == "rejected")) + map(select(.rateLimitType == "five_hour" or .rateLimitType == null)))
+              | .[0].resetsAt // empty' <<<"$limits")
+            reset=${reset%.*}
+            if [ -n "$reset" ] && [ "$reset" -gt 100000000000 ]; then
+              reset=$((reset / 1000)) # milliseconds -> seconds
+            fi
+
+            if [ -z "$reset" ]; then
+              if [ "$is_error" != "false" ]; then
+                echo "::error::Ping failed. The token may be expired or invalid."
+                exit 1
+              fi
+              echo "::warning::Claude replied but sent no reset time. Checking again in 30 minutes."
+              reset=$((now + 1800))
+            elif [ $((reset - now)) -lt 300 ] && [ "$attempt" -lt 3 ]; then
+              # Landed just before the old window ended: wait for the reset and ping again.
+              sleep $(( reset - now + MARGIN_SECONDS > 0 ? reset - now + MARGIN_SECONDS : 0 ))
+              continue
+            fi
+            break
+          done
+          echo "$reset" > state/next-reset
+          when=$(TZ=$TZ_DISPLAY date -d @"$reset" '+%a %-I:%M %p %Z')
+          echo "Next reset: $when"
+          echo "### Next reset: $when" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save next reset time
+        if: steps.check.outputs.due == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: next-reset-${{ github.run_id }}-${{ github.run_attempt }}
 
   keepalive:
     if: github.event.schedule == '27 4 * * 1'
