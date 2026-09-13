@@ -1,0 +1,61 @@
+name: Claude 5h ping
+
+# Keeps a Claude Pro/Max 5-hour usage window running at all times.
+# Cron times are UTC. See README.md for how to change the schedule.
+on:
+  schedule:
+    - cron: '13,43 * * * *' # ping: every 30 minutes
+    - cron: '27 4 * * 1'    # keepalive: weekly, stops GitHub auto-disabling the schedule
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.schedule || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '13,43 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Send ping
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::Secret CLAUDE_CODE_OAUTH_TOKEN is not set. Run 'claude setup-token' and add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          # No --bare: bare mode ignores CLAUDE_CODE_OAUTH_TOKEN.
+          # --tools "" must be followed by another option, not the prompt.
+          reply=$(claude --model haiku \
+            --tools "" \
+            --system-prompt "Reply with the single word: ok" \
+            --no-session-persistence \
+            -p "ping")
+          echo "Claude replied: $reply"
+          if [ -z "$reply" ]; then
+            echo "::error::Empty reply from Claude. The token may be expired or invalid."
+            exit 1
+          fi
+
+  keepalive:
+    if: github.event.schedule == '27 4 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/claude-5h-ping.yml/enable"
