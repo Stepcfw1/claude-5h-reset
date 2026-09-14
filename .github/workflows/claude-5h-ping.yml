@@ -2,32 +2,74 @@ name: Claude 5h ping
 
 # Sends one tiny message to Claude right after the 5-hour usage window resets,
 # so the next window starts immediately. Cron times are UTC.
+# Modes: Actions > Claude 5h ping > Run workflow. See README.md.
 on:
   schedule:
-    - cron: '3-59/10 * * * *' # check: every 10 minutes, pings only when a reset is due
+    - cron: '3-59/10 * * * *' # check: every 10 minutes, pings only when one is due
     - cron: '27 4 * * 1'      # keepalive: weekly, stops GitHub auto-disabling the schedule
   workflow_dispatch:
     inputs:
-      force:
-        description: 'Ping now, even if no reset is due'
-        type: boolean
-        default: false
+      mode:
+        description: 'plan = reset soon after your start time · auto = every 5h, clears a plan · ping-now = one ping now'
+        type: choice
+        options:
+          - plan
+          - auto
+          - ping-now
+        default: plan
+      start:
+        description: 'plan: when you start, Pacific time (9am, 18:30, tomorrow 9am, sat 10am, 2026-09-20 14:00)'
+        type: string
+        required: false
+      reset_after:
+        description: 'plan: minutes after you start that the window should reset'
+        type: number
+        default: 60
 
 permissions: {}
 
+env:
+  TIMEZONE: America/Los_Angeles
+  WINDOW_SECONDS: 18000 # 5 hours
+  MARGIN_SECONDS: 60    # ping this long after a reset, never before it
+  LEAD_SECONDS: 1500    # start waiting when a ping is less than 25 min away
+
 jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'ping-now'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Save plan
+        env:
+          MODE: ${{ inputs.mode }}
+          START: ${{ inputs.start }}
+          RESET_AFTER: ${{ inputs.reset_after }}
+          PLAN_ID: ${{ github.run_id }}
+        run: bash scripts/plan.sh
+
+      - uses: actions/cache/save@v4
+        with:
+          path: plan
+          key: plan-${{ github.run_id }}-${{ github.run_attempt }}
+
   ping:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '3-59/10 * * * *'
+    needs: plan
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.schedule == '3-59/10 * * * *') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     concurrency:
       group: claude-5h-ping
       cancel-in-progress: false
-    env:
-      LEAD_SECONDS: 1500   # start waiting when the reset is less than 25 min away
-      MARGIN_SECONDS: 60   # ping this long after the reset, never before it
-      TZ_DISPLAY: America/Los_Angeles
     steps:
+      - uses: actions/checkout@v4
+
       - name: Load last known reset time
         uses: actions/cache/restore@v4
         with:
@@ -35,26 +77,18 @@ jobs:
           key: next-reset-${{ github.run_id }}
           restore-keys: next-reset-
 
-      - name: Check if a reset is due
+      - name: Load planned start
+        uses: actions/cache/restore@v4
+        with:
+          path: plan
+          key: plan-${{ github.run_id }}
+          restore-keys: plan-
+
+      - name: Decide when to ping
         id: check
         env:
-          FORCE: ${{ inputs.force }}
-        run: |
-          now=$(date +%s)
-          reset=$(cat state/next-reset 2>/dev/null || echo 0)
-          wait=$((reset + MARGIN_SECONDS - now))
-          if [ "$FORCE" = "true" ] || [ "$reset" -eq 0 ]; then
-            echo "Pinging now."
-            echo "due=true" >> "$GITHUB_OUTPUT"
-            echo "wait=0" >> "$GITHUB_OUTPUT"
-          elif [ "$wait" -le "$LEAD_SECONDS" ]; then
-            echo "Reset at $(TZ=$TZ_DISPLAY date -d @"$reset" '+%-I:%M %p %Z'), pinging right after it."
-            echo "due=true" >> "$GITHUB_OUTPUT"
-            echo "wait=$(( wait > 0 ? wait : 0 ))" >> "$GITHUB_OUTPUT"
-          else
-            echo "Not due. Next reset at $(TZ=$TZ_DISPLAY date -d @"$reset" '+%a %-I:%M %p %Z')."
-            echo "due=false" >> "$GITHUB_OUTPUT"
-          fi
+          FORCE: ${{ inputs.mode == 'ping-now' }}
+        run: bash scripts/decide.sh
 
       - uses: actions/setup-node@v4
         if: steps.check.outputs.due == 'true'
@@ -65,7 +99,7 @@ jobs:
         if: steps.check.outputs.due == 'true'
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Wait for the reset
+      - name: Wait until ping time
         if: steps.check.outputs.due == 'true' && steps.check.outputs.wait != '0'
         run: sleep ${{ steps.check.outputs.wait }}
 
@@ -73,56 +107,8 @@ jobs:
         if: steps.check.outputs.due == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            echo "::error::Secret CLAUDE_CODE_OAUTH_TOKEN is not set. Run 'claude setup-token' and add it under Settings > Secrets and variables > Actions."
-            exit 1
-          fi
-          mkdir -p state
-          for attempt in 1 2 3; do
-            # No --bare: bare mode ignores CLAUDE_CODE_OAUTH_TOKEN.
-            # --tools "" must be followed by another option, not the prompt.
-            out=$(claude --model haiku \
-              --tools "" \
-              --system-prompt "Reply with the single word: ok" \
-              --no-session-persistence \
-              --output-format stream-json --verbose \
-              -p "ping" || true)
-            now=$(date +%s)
-            json=$(jq -cR 'fromjson?' <<<"$out")
-            reply=$(jq -r 'select(.type=="result") | .result // empty' <<<"$json")
-            is_error=$(jq -r 'select(.type=="result") | .is_error' <<<"$json")
-            limits=$(jq -c 'select(.type=="rate_limit_event") | .rate_limit_info' <<<"$json")
-            echo "Claude replied: ${reply:-<nothing>}"
-            jq -c '{status, rateLimitType, resetsAt}' <<<"$limits"
-
-            # Prefer a limit that is currently blocking, otherwise the 5-hour window.
-            reset=$(jq -rs 'map(select(.resetsAt != null))
-              | (map(select(.status == "rejected")) + map(select(.rateLimitType == "five_hour" or .rateLimitType == null)))
-              | .[0].resetsAt // empty' <<<"$limits")
-            reset=${reset%.*}
-            if [ -n "$reset" ] && [ "$reset" -gt 100000000000 ]; then
-              reset=$((reset / 1000)) # milliseconds -> seconds
-            fi
-
-            if [ -z "$reset" ]; then
-              if [ "$is_error" != "false" ]; then
-                echo "::error::Ping failed. The token may be expired or invalid."
-                exit 1
-              fi
-              echo "::warning::Claude replied but sent no reset time. Checking again in 30 minutes."
-              reset=$((now + 1800))
-            elif [ $((reset - now)) -lt 300 ] && [ "$attempt" -lt 3 ]; then
-              # Landed just before the old window ended: wait for the reset and ping again.
-              sleep $(( reset - now + MARGIN_SECONDS > 0 ? reset - now + MARGIN_SECONDS : 0 ))
-              continue
-            fi
-            break
-          done
-          echo "$reset" > state/next-reset
-          when=$(TZ=$TZ_DISPLAY date -d @"$reset" '+%a %-I:%M %p %Z')
-          echo "Next reset: $when"
-          echo "### Next reset: $when" >> "$GITHUB_STEP_SUMMARY"
+          CONSUME: ${{ steps.check.outputs.consume }}
+        run: bash scripts/ping.sh
 
       - name: Save next reset time
         if: steps.check.outputs.due == 'true'
