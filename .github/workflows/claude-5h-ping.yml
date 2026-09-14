@@ -18,7 +18,7 @@ on:
           - ping-now
         default: plan
       start:
-        description: 'plan: when you start, Pacific time (9am, 18:30, tomorrow 9am, sat 10am, 2026-09-20 14:00)'
+        description: 'plan: when you start, Eastern (DC) time (9am, 18:30, tomorrow 9am, sat 10am, 2026-09-20 14:00)'
         type: string
         required: false
       reset_after:
@@ -29,7 +29,7 @@ on:
 permissions: {}
 
 env:
-  TIMEZONE: America/Los_Angeles
+  TIMEZONE: America/New_York
   WINDOW_SECONDS: 18000 # 5 hours
   MARGIN_SECONDS: 60    # ping this long after a reset, never before it
   LEAD_SECONDS: 1500    # start waiting when a ping is less than 25 min away

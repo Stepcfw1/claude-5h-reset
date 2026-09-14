@@ -26,7 +26,7 @@ then click **Run workflow**. This works from your phone's browser too.
 so the window resets at about 10:00 AM. You use the rest of that window from 9 to 10,
 then get a fresh 5 hours.
 
-- `start` is Pacific time. Examples: `9am`, `18:30`, `tomorrow 9am`, `sat 10am`, `2026-09-20 14:00`.
+- `start` is Eastern (DC) time. Examples: `9am`, `18:30`, `tomorrow 9am`, `sat 10am`, `2026-09-20 14:00`.
 - A time without a date that has already passed today means tomorrow.
 - If you start in less than about 4 hours, that exact reset is no longer possible.
   A new window starts as early as possible instead.
