@@ -98,7 +98,7 @@ repo inactivity (a public-repo rule).
      - `X-GitHub-Api-Version` = `2022-11-28`
      - `Content-Type` = `application/json`
    - **Request body:** `{"ref":"main","inputs":{"mode":"check"}}`
-6. Save. Each call should get response **204 No Content**, and new `check` runs
+6. Save. Each call should get a **200** (or **204**) response, and new `check` runs
    appear in the Actions tab.
 
 ### 4. Test
