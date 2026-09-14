@@ -2,20 +2,22 @@ name: Claude 5h ping
 
 # Sends one tiny message to Claude right after the 5-hour usage window resets,
 # so the next window starts immediately. Cron times are UTC.
-# Modes: Actions > Claude 5h ping > Run workflow. See README.md.
+# cron-job.org starts a `check` run every 5 minutes, because GitHub skips many
+# scheduled runs. Modes: Actions > Claude 5h ping > Run workflow. See README.md.
 on:
   schedule:
-    - cron: '3-59/10 * * * *' # check: every 10 minutes, pings only when one is due
-    - cron: '27 4 * * 1'      # keepalive: weekly, stops GitHub auto-disabling the schedule
+    - cron: '17 * * * *'  # backup check: hourly, in case the outside timer is down
+    - cron: '27 4 * * 1'  # keepalive: weekly, stops GitHub auto-disabling the schedule
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan = reset soon after your start time · auto = every 5h, clears a plan · ping-now = one ping now'
+        description: 'plan = reset soon after your start time · auto = every 5h, clears a plan · ping-now = one ping now · check = what the timer runs'
         type: choice
         options:
           - plan
           - auto
           - ping-now
+          - check
         default: plan
       start:
         description: 'plan: when you start, Eastern (DC) time (9am, 18:30, tomorrow 9am, sat 10am, 2026-09-20 14:00)'
@@ -32,11 +34,11 @@ env:
   TIMEZONE: America/New_York
   WINDOW_SECONDS: 18000 # 5 hours
   MARGIN_SECONDS: 60    # ping this long after a reset, never before it
-  LEAD_SECONDS: 1500    # start waiting when a ping is less than 25 min away
+  LEAD_SECONDS: 900     # start waiting when a ping is less than 15 min away
 
 jobs:
   plan:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'ping-now'
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'plan' || inputs.mode == 'auto')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -59,9 +61,9 @@ jobs:
 
   ping:
     needs: plan
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.schedule == '3-59/10 * * * *') }}
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.schedule == '17 * * * *') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
       contents: read
     concurrency:
