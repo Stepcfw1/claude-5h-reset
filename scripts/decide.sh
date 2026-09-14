@@ -4,7 +4,7 @@
 set -euo pipefail
 
 now=${NOW:-$(date +%s)}
-show() { TZ=$TIMEZONE date -d "@$1" '+%a %-I:%M %p'; }
+show() { TZ=$TIMEZONE date -d "@$1" '+%a %b %-d, %-I:%M %p'; }
 say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
 
 reset=$(cat state/next-reset 2>/dev/null || echo 0)
