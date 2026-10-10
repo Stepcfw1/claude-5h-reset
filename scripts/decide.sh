@@ -47,6 +47,7 @@ if [ "$wait" -le "$LEAD_SECONDS" ]; then
   if [ "$wait" -lt 0 ]; then wait=0; fi
   echo "due=true" >> "$GITHUB_OUTPUT"
   echo "wait=$wait" >> "$GITHUB_OUTPUT"
+  echo "at=$target" >> "$GITHUB_OUTPUT"   # absolute target: the sleep step recomputes after npm install
   echo "consume=$consume" >> "$GITHUB_OUTPUT"
   say "Next ping: $(show "$target") (sent by this run)."
 else

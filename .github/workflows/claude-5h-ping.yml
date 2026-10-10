@@ -102,8 +102,11 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
 
       - name: Wait until ping time
-        if: steps.check.outputs.due == 'true' && steps.check.outputs.wait != '0'
-        run: sleep ${{ steps.check.outputs.wait }}
+        if: steps.check.outputs.due == 'true'
+        run: |
+          # Recomputed here: the npm install above ate part of the original wait.
+          left=$(( ${{ steps.check.outputs.at }} - $(date +%s) ))
+          if [ "$left" -gt 0 ]; then sleep "$left"; fi
 
       - name: Send ping and read the next reset time
         if: steps.check.outputs.due == 'true'
