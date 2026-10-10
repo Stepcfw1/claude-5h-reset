@@ -31,7 +31,7 @@ check() { # check <name> <expected> <actual>
   if [ "$2" = "$3" ]; then echo "ok   - $1"; else echo "FAIL - $1: expected '$2', got '$3'"; fails=$((fails+1)); fi
 }
 
-limits() { # limits <window_minutes> <resets_at>
+limits() { # limits <window_minutes> <resets_at> -> a token_count event
   printf '{"type":"token_count","rate_limits":{"primary":{"used_percent":12,"window_minutes":%s,"resets_at":%s},"secondary":null}}' "$1" "$2"
 }
 
@@ -82,6 +82,17 @@ setup "$(limits 300 $((NOW + 17000)))
 {\"type\":\"other\",\"stuff\":{\"window_minutes\":300,\"resets_at\":1804000000}}"
 CODEX_AUTH_JSON='{"tokens":{"x":1}}' run ping
 check "i: decoy ignored -> real resets_at+60" "$((NOW + 17060))" "$(cat "$work/codex-state/next-ping")"
+
+# (j) a nested rate_limits block on a non-token_count record must be ignored
+setup "$(limits 300 $((NOW + 17000)))
+{\"type\":\"other\",\"stuff\":{\"rate_limits\":{\"primary\":{\"window_minutes\":300,\"resets_at\":1804000000}}}}"
+CODEX_AUTH_JSON='{"tokens":{"x":1}}' run ping
+check "j: nested decoy ignored -> real resets_at+60" "$((NOW + 17060))" "$(cat "$work/codex-state/next-ping")"
+
+# (k) the real event inside an envelope is still found
+setup "{\"timestamp\":\"x\",\"type\":\"event_msg\",\"payload\":$(limits 300 $((NOW + 16000)))}"
+CODEX_AUTH_JSON='{"tokens":{"x":1}}' run ping
+check "k: envelope payload found -> resets_at+60" "$((NOW + 16060))" "$(cat "$work/codex-state/next-ping")"
 
 # (f) no secret -> exits 0, writes no state
 setup "$(limits 300 $((NOW + 17000)))"

@@ -15,12 +15,14 @@ FIVE_HOURS_MINUTES = 300
 def latest_reset(obj, found):
     """Collect resets_at only from a token_count event's rate_limits slots.
 
-    Matching any object with window_minutes would let unrelated records (or a nested
-    copy of one) override the real value, so the shape is checked explicitly.
+    Matching any object with window_minutes, or any object merely carrying a
+    rate_limits dict, would let unrelated records override the real value, so an
+    explicit "type": "token_count" is required. If a future rollout format drops that
+    field, nothing is found and the caller falls back to the blind cadence.
     """
     if isinstance(obj, dict):
         limits = obj.get("rate_limits")
-        if isinstance(limits, dict) and obj.get("type", "token_count") == "token_count":
+        if isinstance(limits, dict) and obj.get("type") == "token_count":
             for slot in ("primary", "secondary"):
                 window = limits.get(slot)
                 if (
