@@ -63,33 +63,30 @@ run it with `bash scripts/test-codex-ping.sh`.
 A weekly `keepalive` job stops GitHub from disabling the schedule after 60 days of
 repo inactivity (a public-repo rule).
 
-## Codex too
+## Codex: tried, does not work
 
-The `codex` job does the same for a Codex (ChatGPT) 5-hour window, which is a separate
-limit from Claude's. It runs on the same timer, in its own job, with its own cache
-(`codex-next-*`), so neither side can break the other. Without the `CODEX_AUTH_JSON`
-secret the job just prints a notice and exits.
+A `codex` job is still in the workflow, but it is **off**, and there is a hard reason.
 
-Two differences from the Claude side:
+Codex has no `setup-token` equivalent, so the only way to use ChatGPT plan quota in CI
+is a copy of `~/.codex/auth.json`. Two things make that unusable:
 
-- **Reset time:** `codex exec` doesn't print it. The job reads it from the rollout file
-  Codex writes under `~/.codex/sessions` (the window with `window_minutes: 300`). When
-  that isn't there, or the value is stale, the job falls back to pinging every
-  **5 h 05 m** and says so in the log. Expect ~1 minute of idle per window with a
-  reset time, a few minutes without one.
-- **Login:** Codex has no `setup-token`. The only way to use your ChatGPT plan quota in
-  CI is a copy of your `~/.codex/auth.json` (an API key would bill separately and
-  wouldn't touch the plan quota). OpenAI recommends API keys for CI, so this is a
-  deliberate trade-off.
-- **Single-use refresh tokens:** Codex burns its refresh token every time it logs in and
-  writes a new one to `auth.json`. A copy therefore works exactly once. So the job
-  stores the refreshed file back into the `CODEX_AUTH_JSON` secret after every run,
-  which needs a second secret, `CODEX_SECRETS_PAT`. For the same reason the CI login
-  must be its **own** login: if you keep using the same one on your PC, each side
-  invalidates the other. A failed ping backs off for an hour rather than retrying on
-  every check.
+1. Codex burns its refresh token on every login and writes a new one, so a copy works
+   exactly once. (The job can write the refreshed file back into the secret, which is
+   implemented and does work.)
+2. **ChatGPT keeps only one Codex session per account.** Logging in again anywhere
+   revokes the previous session (`refresh_token_invalidated` / `token_revoked`). So the
+   PC and GitHub cannot both hold a login: whoever logs in last breaks the other.
 
-There's no `plan` mode for Codex, just the always-on behavior.
+Tested 2026-10-21: a login was pasted into the secret, a second local login immediately
+revoked it, and the local CLI kept working while CI got 401s.
+
+So keeping a Codex window alive from CI would mean giving up Codex on this PC. Not worth
+it. The job stays in the repo but the `CODEX_AUTH_JSON` secret is deleted, so it prints
+a notice and exits green on every check.
+
+To revive it if OpenAI ever allows a second session, or on a second account: follow
+step 3 below again. An API key is not a workaround, it bills separately and does not
+touch plan quota.
 
 ## Setup
 
