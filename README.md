@@ -129,7 +129,7 @@ Codex needs two secrets, and a login that only GitHub uses.
 **3b. A dedicated Codex login for GitHub**
 
 1. `codex login` on your PC (this replaces your local login for a moment).
-2. Copy all of `%USERPROFILE%\.codexuth.json` into a repository secret named
+2. Copy all of `%USERPROFILE%\.codex\auth.json` into a repository secret named
    `CODEX_AUTH_JSON`.
 3. **Run `codex login` again right away.** That gives your PC a fresh login of its own
    and leaves the copy in GitHub as the only user of its token chain.
