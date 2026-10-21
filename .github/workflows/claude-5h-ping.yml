@@ -122,62 +122,6 @@ jobs:
           path: state
           key: next-reset-${{ github.run_id }}-${{ github.run_attempt }}
 
-  codex:
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.schedule == '17 * * * *') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    concurrency:
-      group: claude-5h-ping-codex
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Load next Codex ping time
-        uses: actions/cache/restore@v4
-        with:
-          path: codex-state
-          key: codex-next-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: codex-next-
-
-      - name: Decide whether a Codex ping is due
-        id: check
-        env:
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
-        run: bash scripts/codex-ping.sh decide
-
-      - uses: actions/setup-node@v4
-        if: steps.check.outputs.due == 'true'
-        with:
-          node-version: 22
-
-      - name: Install Codex
-        if: steps.check.outputs.due == 'true'
-        run: npm install -g @openai/codex
-
-      - name: Wait until ping time
-        if: steps.check.outputs.due == 'true'
-        run: |
-          # Recomputed here: the npm install above ate part of the original wait.
-          left=$(( ${{ steps.check.outputs.at }} - $(date +%s) ))
-          if [ "$left" -gt 0 ]; then sleep "$left"; fi
-
-      - name: Send Codex ping and read the next reset time
-        id: ping
-        if: steps.check.outputs.due == 'true'
-        env:
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
-          CODEX_SECRETS_PAT: ${{ secrets.CODEX_SECRETS_PAT }}
-        run: bash scripts/codex-ping.sh ping
-
-      - name: Save next Codex ping time
-        if: always() && steps.ping.outputs.save == 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: codex-state
-          key: codex-next-${{ github.run_id }}-${{ github.run_attempt }}
-
   keepalive:
     if: github.event.schedule == '27 4 * * 1'
     runs-on: ubuntu-latest

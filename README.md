@@ -56,37 +56,17 @@ gh workflow run claude-5h-ping.yml -R Stepcfw1/claude-5h-reset -f mode=plan -f s
    reset time and follows it.
 
 The scripts in `scripts/` hold the logic: `plan.sh` saves a plan, `decide.sh` picks
-the next ping time, and `ping.sh` sends the ping. `codex-ping.sh` (with
-`read_reset.py`) does both jobs for Codex; `test-codex-ping.sh` is its self-check,
-run it with `bash scripts/test-codex-ping.sh`.
+the next ping time, and `ping.sh` sends the ping.
 
 A weekly `keepalive` job stops GitHub from disabling the schedule after 60 days of
 repo inactivity (a public-repo rule).
 
-## Codex: tried, does not work
+## Why there is no Codex version
 
-A `codex` job is still in the workflow, but it is **off**, and there is a hard reason.
-
-Codex has no `setup-token` equivalent, so the only way to use ChatGPT plan quota in CI
-is a copy of `~/.codex/auth.json`. Two things make that unusable:
-
-1. Codex burns its refresh token on every login and writes a new one, so a copy works
-   exactly once. (The job can write the refreshed file back into the secret, which is
-   implemented and does work.)
-2. **ChatGPT keeps only one Codex session per account.** Logging in again anywhere
-   revokes the previous session (`refresh_token_invalidated` / `token_revoked`). So the
-   PC and GitHub cannot both hold a login: whoever logs in last breaks the other.
-
-Tested 2026-10-21: a login was pasted into the secret, a second local login immediately
-revoked it, and the local CLI kept working while CI got 401s.
-
-So keeping a Codex window alive from CI would mean giving up Codex on this PC. Not worth
-it. The job stays in the repo but the `CODEX_AUTH_JSON` secret is deleted, so it prints
-a notice and exits green on every check.
-
-To revive it if OpenAI ever allows a second session, or on a second account: follow
-step 3 below again. An API key is not a workaround, it bills separately and does not
-touch plan quota.
+Tried 2026-10-21, removed. Codex has no `setup-token` equivalent, so CI would need a
+copy of `~/.codex/auth.json`, and ChatGPT keeps only one Codex session per account: a
+second login anywhere revokes the first. Keeping a Codex window alive from Actions
+would mean losing Codex on this PC. See commit history if it ever becomes possible.
 
 ## Setup
 
@@ -111,30 +91,7 @@ touch plan quota.
    everything else as it is.
 5. Click **Generate token** and copy it. You won't be able to see it again.
 
-### 3. Codex (optional, skip if you only use Claude)
-
-Codex needs two secrets, and a login that only GitHub uses.
-
-**3a. A token so the job can update its own secret**
-
-1. Open <https://github.com/settings/personal-access-tokens/new>.
-2. Name it `codex token refresh`, expiration as you like.
-3. **Repository access:** Only select repositories → `claude-5h-reset`.
-4. **Permissions → Repository permissions → Secrets:** *Read and write*.
-5. Generate it, then add it as a repository secret named `CODEX_SECRETS_PAT`.
-
-**3b. A dedicated Codex login for GitHub**
-
-1. `codex login` on your PC (this replaces your local login for a moment).
-2. Copy all of `%USERPROFILE%\.codex\auth.json` into a repository secret named
-   `CODEX_AUTH_JSON`.
-3. **Run `codex login` again right away.** That gives your PC a fresh login of its own
-   and leaves the copy in GitHub as the only user of its token chain.
-
-Do not reuse the GitHub copy locally afterwards: the first side to refresh it locks the
-other one out. If runs start failing with "refresh token was already used", redo 3b.
-
-### 4. cron-job.org
+### 3. cron-job.org
 
 1. Create a free account at <https://cron-job.org>, then click **Create cronjob**.
 2. **Title:** `Claude 5h check`
@@ -151,7 +108,7 @@ other one out. If runs start failing with "refresh token was already used", redo
 6. Save. Each call should get a **200** (or **204**) response, and new `check` runs
    appear in the Actions tab.
 
-### 5. Test
+### 4. Test
 
 Run workflow with mode `ping-now`. The run summary shows **Next reset: …**, which should
 match [claude.ai/settings/usage](https://claude.ai/settings/usage).
@@ -162,10 +119,6 @@ match [claude.ai/settings/usage](https://claude.ai/settings/usage).
   not even you, after saving. You can only replace or delete it. GitHub hides it as
   `***` if it ever appears in a log. Forks and pull requests from other people don't
   get access to secrets.
-- **Codex `auth.json`:** stored as an encrypted secret like the Claude token, and never
-  printed. The job rewrites it after each run through `CODEX_SECRETS_PAT`, which can
-  only touch this repository's secrets. It is still a login file, so if you'd rather
-  not keep one in GitHub, skip the Codex job entirely.
 - **GitHub token in cron-job.org:** it can only start and manage workflow runs in this
   one repo. It can't read your secrets, change code, or touch your other repos. If it
   ever leaks, delete it at <https://github.com/settings/personal-access-tokens>.
@@ -185,5 +138,4 @@ match [claude.ai/settings/usage](https://claude.ai/settings/usage).
 ## Cost
 
 - **Claude usage:** about 5 very short Haiku messages a day.
-- **Codex usage:** about 5 very short prompts a day, only if you set `CODEX_AUTH_JSON`.
 - **GitHub minutes:** ~290 short checks a day, free on public repos.
