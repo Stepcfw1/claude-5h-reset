@@ -168,10 +168,11 @@ jobs:
         if: steps.check.outputs.due == 'true'
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_SECRETS_PAT: ${{ secrets.CODEX_SECRETS_PAT }}
         run: bash scripts/codex-ping.sh ping
 
       - name: Save next Codex ping time
-        if: steps.ping.outputs.pinged == 'true'
+        if: always() && steps.ping.outputs.save == 'true'
         uses: actions/cache/save@v4
         with:
           path: codex-state

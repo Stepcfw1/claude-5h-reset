@@ -59,7 +59,7 @@ check "g: decide without secret -> notice" "yes" "$(grep -q '::notice::' "$work/
 # (b) due + a usable 5h reset -> reset + margin
 setup "$(limits 300 $((NOW + 17000)))"; CODEX_AUTH_JSON='{"tokens":{"x":1}}' run ping
 check "b: 5h window -> resets_at+60" "$((NOW + 17060))" "$(cat "$work/codex-state/next-ping")"
-check "b: reports pinged" "pinged=true" "$(cat "$work/out")"
+check "b: reports save" "save=true" "$(cat "$work/out")"
 
 # (c) no rate limits in the rollout -> blind cadence
 setup '{"type":"token_count","rate_limits":null}'; CODEX_AUTH_JSON='{"tokens":{"x":1}}' run ping
@@ -93,6 +93,19 @@ check "j: nested decoy ignored -> real resets_at+60" "$((NOW + 17060))" "$(cat "
 setup "{\"timestamp\":\"x\",\"type\":\"event_msg\",\"payload\":$(limits 300 $((NOW + 16000)))}"
 CODEX_AUTH_JSON='{"tokens":{"x":1}}' run ping
 check "k: envelope payload found -> resets_at+60" "$((NOW + 16060))" "$(cat "$work/codex-state/next-ping")"
+
+# (l) a failing codex backs off an hour instead of retrying every check
+setup "$(limits 300 $((NOW + 17000)))"
+cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo "ERROR: refresh token was already used" >&2
+exit 1
+FAKE
+chmod +x "$bin/codex"
+if ( cd "$work" && HOME="$home" PATH="$bin:$PATH" NOW=$NOW CODEX_AUTH_JSON='{"t":1}'      GITHUB_OUTPUT="$work/out" GITHUB_STEP_SUMMARY="$work/sum" bash "$SCRIPT" ping >"$work/log" 2>&1 ); then rc=0; else rc=$?; fi
+check "l: failure -> exit 1" "1" "$rc"
+check "l: failure -> backs off 1h" "$((NOW + 3600))" "$(cat "$work/codex-state/next-ping")"
+check "l: failure -> still saves state" "save=true" "$(cat "$work/out")"
 
 # (f) no secret -> exits 0, writes no state
 setup "$(limits 300 $((NOW + 17000)))"

@@ -80,9 +80,14 @@ Two differences from the Claude side:
 - **Login:** Codex has no `setup-token`. The only way to use your ChatGPT plan quota in
   CI is a copy of your `~/.codex/auth.json` (an API key would bill separately and
   wouldn't touch the plan quota). OpenAI recommends API keys for CI, so this is a
-  deliberate trade-off. Codex refreshes that file as it runs and the refreshed copy is
-  thrown away with the runner, so the stored secret can go stale; the job prints a
-  warning when it sees a refresh, and fails loudly once it stops working.
+  deliberate trade-off.
+- **Single-use refresh tokens:** Codex burns its refresh token every time it logs in and
+  writes a new one to `auth.json`. A copy therefore works exactly once. So the job
+  stores the refreshed file back into the `CODEX_AUTH_JSON` secret after every run,
+  which needs a second secret, `CODEX_SECRETS_PAT`. For the same reason the CI login
+  must be its **own** login: if you keep using the same one on your PC, each side
+  invalidates the other. A failed ping backs off for an hour rather than retrying on
+  every check.
 
 There's no `plan` mode for Codex, just the always-on behavior.
 
@@ -109,15 +114,28 @@ There's no `plan` mode for Codex, just the always-on behavior.
    everything else as it is.
 5. Click **Generate token** and copy it. You won't be able to see it again.
 
-### 3. Codex login (optional, skip if you only use Claude)
+### 3. Codex (optional, skip if you only use Claude)
 
-1. Install Codex and run `codex login` on this PC.
-2. Open `%USERPROFILE%\.codex\auth.json` and copy everything in it.
-3. Repo → Settings → Secrets and variables → Actions → New repository secret.
-   Name it `CODEX_AUTH_JSON` and paste the file contents as the value.
+Codex needs two secrets, and a login that only GitHub uses.
 
-Treat that file like a password. If runs start failing with an auth error, run
-`codex login` again and re-paste it.
+**3a. A token so the job can update its own secret**
+
+1. Open <https://github.com/settings/personal-access-tokens/new>.
+2. Name it `codex token refresh`, expiration as you like.
+3. **Repository access:** Only select repositories → `claude-5h-reset`.
+4. **Permissions → Repository permissions → Secrets:** *Read and write*.
+5. Generate it, then add it as a repository secret named `CODEX_SECRETS_PAT`.
+
+**3b. A dedicated Codex login for GitHub**
+
+1. `codex login` on your PC (this replaces your local login for a moment).
+2. Copy all of `%USERPROFILE%\.codexuth.json` into a repository secret named
+   `CODEX_AUTH_JSON`.
+3. **Run `codex login` again right away.** That gives your PC a fresh login of its own
+   and leaves the copy in GitHub as the only user of its token chain.
+
+Do not reuse the GitHub copy locally afterwards: the first side to refresh it locks the
+other one out. If runs start failing with "refresh token was already used", redo 3b.
 
 ### 4. cron-job.org
 
@@ -148,8 +166,9 @@ match [claude.ai/settings/usage](https://claude.ai/settings/usage).
   `***` if it ever appears in a log. Forks and pull requests from other people don't
   get access to secrets.
 - **Codex `auth.json`:** stored as an encrypted secret like the Claude token, and never
-  printed. It is still a login file, so if you'd rather not keep one in GitHub, skip
-  the Codex job entirely.
+  printed. The job rewrites it after each run through `CODEX_SECRETS_PAT`, which can
+  only touch this repository's secrets. It is still a login file, so if you'd rather
+  not keep one in GitHub, skip the Codex job entirely.
 - **GitHub token in cron-job.org:** it can only start and manage workflow runs in this
   one repo. It can't read your secrets, change code, or touch your other repos. If it
   ever leaks, delete it at <https://github.com/settings/personal-access-tokens>.

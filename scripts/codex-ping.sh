@@ -7,6 +7,7 @@ set -euo pipefail
 : "${MARGIN_SECONDS:=60}"   # ping this long after a reset, never before it
 : "${LEAD_SECONDS:=900}"    # start waiting when a ping is less than 15 min away
 : "${TIMEZONE:=America/New_York}"
+FAIL_BACKOFF_SECONDS=3600   # after a failure, wait an hour instead of retrying every check
 BLIND_SECONDS=18300         # ponytail: 5h05 blind cadence when Codex reports no usable
                             # reset time; parse app-server account/rateLimits/read if
                             # the drift ever matters
@@ -58,14 +59,28 @@ ping)
   # No --ephemeral: the rollout file it would delete is where the reset time lives.
   if ! reply=$(codex exec --skip-git-repo-check -s read-only "Reply with the single word: ok" 2>&1); then
     echo "$reply" | tail -n 15
-    echo "::error::Codex ping failed. The stored auth.json may be expired, re-run 'codex login' and update CODEX_AUTH_JSON."
+    # Back off, or a broken login makes every 5-minute check fail and mail you about it.
+    mkdir -p codex-state
+    echo $(( ${NOW:-$(date +%s)} + FAIL_BACKOFF_SECONDS )) > codex-state/next-ping
+    out "save=true"
+    echo "::error::Codex ping failed, retrying in $((FAIL_BACKOFF_SECONDS / 60)) min. If this says the refresh token was already used, redo the CODEX_AUTH_JSON setup in README.md."
     exit 1
   fi
   echo "Codex replied: $(echo "$reply" | tail -n 1)"
 
+  # Codex rotates the refresh token on every use, so the copy in the secret is spent as
+  # soon as this run refreshes it. Store the new one back or the next run cannot log in.
   after=$(sha256sum "$HOME/.codex/auth.json" | cut -d' ' -f1)
   if [ "$before" != "$after" ]; then
-    echo "::warning::Codex refreshed auth.json during this run. The copy in CODEX_AUTH_JSON is now older and will stop working eventually, re-paste it when runs start failing."
+    if [ -n "${CODEX_SECRETS_PAT:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+      if GH_TOKEN="$CODEX_SECRETS_PAT" gh secret set CODEX_AUTH_JSON -R "$GITHUB_REPOSITORY" < "$HOME/.codex/auth.json"; then
+        echo "Stored the refreshed login back into CODEX_AUTH_JSON."
+      else
+        echo "::error::Could not update CODEX_AUTH_JSON. The next run will fail to log in. Check the CODEX_SECRETS_PAT secret (needs this repo's Secrets: Read and write)."
+      fi
+    else
+      echo "::warning::Codex refreshed its login but CODEX_SECRETS_PAT is not set, so the new token cannot be saved. The next run will fail. See README.md."
+    fi
   fi
 
   # Rate limits are not in `codex exec` stdout; they ride along in token_count events
@@ -95,7 +110,7 @@ ping)
 
   mkdir -p codex-state
   echo "$next" > codex-state/next-ping
-  out "pinged=true"
+  out "save=true"
   say "### Codex next ping: $(show "$next") ($why)"
   ;;
 
